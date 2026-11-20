@@ -1,0 +1,42 @@
+/* Paddock: funciona sin conexión y siempre busca la última versión.
+   Sube el número de versión al cambiar la app. */
+const CACHE = "paddock-v28";
+const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./datos-iniciales.json",
+  "./icon-180.png", "./icon-192.png", "./icon-512.png", "./favicon-32.png"];
+
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE)
+    .then((c) => Promise.all(ASSETS.map((a) => fetch(a, { cache: "no-store" }).then((r) => (r.ok ? c.put(a, r) : null)).catch(() => null))))
+    .then(() => self.skipWaiting()));
+});
+self.addEventListener("activate", (e) => {
+  e.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+self.addEventListener("fetch", (e) => {
+  const req = e.request;
+  const url = new URL(req.url);
+  if (req.method !== "GET" || url.hostname === "api.anthropic.com") return;
+  const own0 = url.origin === self.location.origin;
+  /* Firebase (base de datos y acceso) siempre va directo a internet, sin caché. */
+  if (!own0 && !["fonts.gstatic.com", "fonts.googleapis.com", "www.gstatic.com"].includes(url.hostname)) return;
+  const own = url.origin === self.location.origin;
+  if (req.mode === "navigate" || (own && /\.(html|json|webmanifest)$|\/$/.test(url.pathname))) {
+    /* La app y sus datos: siempre de internet si hay conexión; si no, la copia guardada. */
+    /* Se pide siempre la versión recién publicada: el ?_= evita la copia que guarda GitHub unos minutos. */
+    const fresh = own ? new Request(url.origin + url.pathname + (url.search ? url.search + "&" : "?") + "_=" + Date.now(), { cache: "no-store", credentials: "same-origin" }) : req;
+    e.respondWith(fetch(fresh, { cache: "no-store" }).then((res) => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req.mode === "navigate" ? "./index.html" : req, copy)); }
+      return res;
+    }).catch(() => caches.match(req.mode === "navigate" ? "./index.html" : req).then((hit) => hit || caches.match("./index.html"))));
+    return;
+  }
+  e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    if (res.ok && (own || url.hostname === "fonts.gstatic.com" || url.hostname === "fonts.googleapis.com" || (url.hostname === "www.gstatic.com" && url.pathname.startsWith("/firebasejs/")))) {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy));
+    }
+    return res;
+  })));
+});
